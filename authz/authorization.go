@@ -9,7 +9,7 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/pkg/authorization"
-	"github.com/memAuditAuthz/core"
+	"github.com/AuthzMemory/core"
 
 	//	"fmt"
 
