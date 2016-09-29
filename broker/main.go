@@ -7,8 +7,8 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
-	"github.com/memAuditAuthz/authz"
-	"github.com/memAuditAuthz/core"
+	"github.com/AuthzMemory/authz"
+	"github.com/AuthzMemory/core"
 )
 
 const (
