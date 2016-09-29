@@ -1,7 +1,6 @@
 package core
 
 import "regexp"
-import "github.com/Sirupsen/logrus"
 
 type route struct {
 	pattern string
@@ -136,7 +135,7 @@ func ParseRoute(method, url string) (string, string) {
 
 			if err == nil && match {
 				parsedArr := regexp.MustCompile(route.pattern).FindStringSubmatch(url)
-				logrus.Info(parsedArr)
+				// logrus.Info(parsedArr)
 				if len(parsedArr) > 1 {
 					id = parsedArr[1]
 				}

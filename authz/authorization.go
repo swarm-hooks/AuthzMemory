@@ -2,13 +2,16 @@ package authz
 
 import (
 	"encoding/json"
+	"io"
+	"strconv"
+	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/pkg/authorization"
 	"github.com/memAuditAuthz/core"
 
 	//	"fmt"
-	. "time"
 
 	"github.com/docker/engine-api/client"
 	"github.com/docker/engine-api/types"
@@ -34,6 +37,7 @@ type BasicAuthorizerSettings struct {
 
 var memoryLimit int64
 var currentMemory float64
+var cli *client.Client
 
 // NewBasicAuthZAuthorizer creates a new basic authorizer
 func NewBasicAuthZAuthorizer(settings *BasicAuthorizerSettings) core.Authorizer {
@@ -49,7 +53,8 @@ func (f *basicAuthorizer) Init() error {
 
 func initializeOnFirstCall() error {
 	defaultHeaders := map[string]string{"User-Agent": "engine-api-cli-1.0", AuthZTenantIDHeaderName: "infoTenantInternal"}
-	cli, err := client.NewClient("unix:///var/run/docker.sock", "v1.24", nil, defaultHeaders)
+	var err error
+	cli, err = client.NewClient("unix:///var/run/docker.sock", "v1.24", nil, defaultHeaders)
 	if err != nil {
 		panic(err)
 	}
@@ -61,13 +66,53 @@ func initializeOnFirstCall() error {
 		panic(err)
 	}
 
+	type decodingResult struct {
+		msg events.Message
+		err error
+	}
+
+	//TODO - Fix this it only takes one event
+
+	stopChan := make(chan struct{})
+	responseBody, err := cli.Events(context.Background(), types.EventsOptions{})
+	if err != nil {
+		panic(err)
+	}
+	resultChan := make(chan decodingResult)
+
+	go func() {
+		dec := json.NewDecoder(responseBody)
+		for {
+			var result decodingResult
+			result.err = dec.Decode(&result.msg)
+			resultChan <- result
+			if result.err == io.EOF {
+				break
+			}
+		}
+		close(resultChan)
+	}()
+
+	go func() {
+		defer responseBody.Close()
+		for {
+			select {
+			case <-stopChan:
+				// ec <- nil
+				return
+			case result := <-resultChan:
+				if result.err != nil {
+					// ec <- result.err
+					return
+				}
+				logrus.Info(result.msg)
+			}
+		}
+	}()
+
 	go func() {
 		for {
-			defaultHeaders := map[string]string{"User-Agent": "engine-api-cli-1.0", AuthZTenantIDHeaderName: "infoTenantInternal"}
-			cli, err := client.NewClient("unix:///var/run/docker.sock", "v1.24", nil, defaultHeaders)
-			if err != nil {
-				panic(err)
-			}
+
 			options := types.ContainerListOptions{All: true}
 			containers, err := cli.ContainerList(context.Background(), options)
 			if err != nil {
@@ -78,17 +123,16 @@ func initializeOnFirstCall() error {
 				cJSON, _ := cli.ContainerInspect(context.Background(), c.ID)
 
 				if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
-					// logrus.Info(cJSON.ContainerJSONBase.HostConfig.Memory)
 					tmp += cJSON.ContainerJSONBase.HostConfig.Memory
 					if cJSON.ContainerJSONBase.HostConfig.Memory == 0 {
-						// logrus.Infof("Warning no memory accounted for container %s ", cJSON.ID)
+						logrus.Infof("Warning no memory accounted for container %s ", cJSON.ID)
 					}
 				}
 
 			}
-			logrus.Info("Current memory used %s", tmp)
+			logrus.Info("Current memory used: " + strconv.FormatInt(int64(tmp), 10))
 			currentMemory = float64(tmp)
-			Sleep(1000 * 120)
+			time.Sleep(120 * time.Second)
 		}
 	}()
 	return nil
