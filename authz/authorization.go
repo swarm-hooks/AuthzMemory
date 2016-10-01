@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/AuthzMemory/core"
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/pkg/authorization"
-	"github.com/AuthzMemory/core"
 
 	//	"fmt"
 
@@ -38,6 +38,7 @@ type BasicAuthorizerSettings struct {
 var memoryLimit int64
 var currentMemory float64
 var cli *client.Client
+var memoryPerID map[string]int64
 
 // NewBasicAuthZAuthorizer creates a new basic authorizer
 func NewBasicAuthZAuthorizer(settings *BasicAuthorizerSettings) core.Authorizer {
@@ -52,6 +53,7 @@ func (f *basicAuthorizer) Init() error {
 }
 
 func initializeOnFirstCall() error {
+	memoryPerID = make(map[string]int64)
 	defaultHeaders := map[string]string{"User-Agent": "engine-api-cli-1.0", AuthZTenantIDHeaderName: "infoTenantInternal"}
 	var err error
 	cli, err = client.NewClient("unix:///var/run/docker.sock", "v1.24", nil, defaultHeaders)
@@ -70,8 +72,6 @@ func initializeOnFirstCall() error {
 		msg events.Message
 		err error
 	}
-
-	//TODO - Fix this it only takes one event
 
 	stopChan := make(chan struct{})
 	responseBody, err := cli.Events(context.Background(), types.EventsOptions{})
@@ -105,7 +105,21 @@ func initializeOnFirstCall() error {
 					// ec <- result.err
 					return
 				}
-				logrus.Info(result.msg)
+				logrus.Debug(result.msg)
+
+				if result.msg.Action == "create" && result.msg.Type == "container" {
+					memoryPerID[result.msg.ID] = 0
+					cJSON, _ := cli.ContainerInspect(context.Background(), result.msg.ID)
+
+					if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
+						currentMemory += float64(cJSON.ContainerJSONBase.HostConfig.Memory)
+						memoryPerID[result.msg.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
+					}
+
+				} else if result.msg.Action == "destroy" && result.msg.Type == "container" {
+					currentMemory -= float64(memoryPerID[result.msg.ID])
+					delete(memoryPerID, result.msg.ID)
+				}
 			}
 		}
 	}()
