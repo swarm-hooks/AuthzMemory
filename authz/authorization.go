@@ -12,7 +12,7 @@ import (
 	"github.com/docker/docker/pkg/authorization"
 
 	//	"fmt"
-
+	"strings"
 	"github.com/docker/engine-api/client"
 	"github.com/docker/engine-api/types"
 	"golang.org/x/net/context"
@@ -26,6 +26,7 @@ const (
 
 // defaultAuditLogPath is the file test hook log path
 const defaultAuditLogPath = "/var/log/authz-broker.log"
+const countExited = false
 
 type basicAuthorizer struct {
 	settings *BasicAuthorizerSettings
@@ -110,14 +111,20 @@ func initializeOnFirstCall() error {
 				if result.msg.Action == "create" && result.msg.Type == "container" {
 					memoryPerID[result.msg.ID] = 0
 					cJSON, _ := cli.ContainerInspect(context.Background(), result.msg.ID)
-
 					if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
 						memoryPerID[result.msg.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
 					}
 
-				} else if result.msg.Action == "destroy" && result.msg.Type == "container" {
+				} else if countExited && result.msg.Action == "destroy" && result.msg.Type == "container" {
+					// Destroy event. Decrease used memory
 					currentMemory -= float64(memoryPerID[result.msg.ID])
 					delete(memoryPerID, result.msg.ID)
+				} else if !countExited && result.msg.Action == "destroy" && result.msg.Type == "container" {
+					// Destroy event. Don't decrease used memory.
+					delete(memoryPerID, result.msg.ID)
+				} else if !countExited && result.msg.Action == "die" && result.msg.Type == "container" {
+					// Die event. Decrease used memory.
+					currentMemory -= float64(memoryPerID[result.msg.ID])
 				}
 			}
 		}
@@ -133,12 +140,19 @@ func initializeOnFirstCall() error {
 			}
 			var tmp int64
 			for _, c := range containers {
-				cJSON, _ := cli.ContainerInspect(context.Background(), c.ID)
-
+				cJSON, _ := cli.ContainerInspect(context.Background(), c.ID)				
 				if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
 					tmp += cJSON.ContainerJSONBase.HostConfig.Memory
+					
+					if !countExited && c.State != "running" {
+						// Don't count not running container
+						tmp -= cJSON.ContainerJSONBase.HostConfig.Memory
+					}
+					
 					if cJSON.ContainerJSONBase.HostConfig.Memory == 0 {
 						logrus.Infof("Warning no memory accounted for container %s ", cJSON.ID)
+					} else {
+						memoryPerID[cJSON.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
 					}
 				}
 
@@ -162,7 +176,25 @@ func (f *basicAuthorizer) AuthZReq(authZReq *authorization.Request) *authorizati
 	// logrus.Infof("Received AuthZ request, method: '%s', url: '%s' , headers: '%s'", authZReq.RequestMethod, authZReq.RequestURI, authZReq.RequestHeaders)
 
 	action, _ := core.ParseRoute(authZReq.RequestMethod, authZReq.RequestURI)
-
+	if action == core.ActionContainerStart && !countExited {
+		ID := getID(authZReq.RequestURI)
+		cJSON, _ := cli.ContainerInspect(context.Background(), ID)
+		var memory float64
+		if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
+			memory = float64(cJSON.ContainerJSONBase.HostConfig.Memory)
+		}
+	
+		if currentMemory + memory < float64(memoryLimit) {
+			currentMemory += memory
+			return &authorization.Response{
+				Allow: true,
+			}
+		}
+		return &authorization.Response{
+			Allow: false,
+			Msg:   "Not enough Memory",
+		}
+	}
 	if action == core.ActionContainerCreate {
 		var request interface{}
 		err := json.Unmarshal(authZReq.RequestBody, &request)
@@ -180,7 +212,6 @@ func (f *basicAuthorizer) AuthZReq(authZReq *authorization.Request) *authorizati
 //				Msg:   "Must request Memory",
 //			}
 //		}
-		// logrus.Info(memory)
 		if float64(currentMemory)+memory < float64(memoryLimit) {
 			currentMemory += memory
 			return &authorization.Response{
@@ -204,4 +235,10 @@ func (f *basicAuthorizer) AuthZRes(authZReq *authorization.Request) *authorizati
 
 	return &authorization.Response{Allow: true}
 
+}
+
+//
+func getID(requestURI string) string {
+	fields := strings.Split(requestURI, "/")
+	return fields[3]
 }
