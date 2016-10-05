@@ -195,7 +195,7 @@ func (f *basicAuthorizer) AuthZReq(authZReq *authorization.Request) *authorizati
 			Msg:   "Not enough Memory",
 		}
 	}
-	if action == core.ActionContainerCreate {
+	if action == core.ActionContainerCreate && countExited {
 		var request interface{}
 		err := json.Unmarshal(authZReq.RequestBody, &request)
 		if err != nil {
