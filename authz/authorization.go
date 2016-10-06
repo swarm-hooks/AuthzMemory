@@ -112,7 +112,6 @@ func initializeOnFirstCall() error {
 					cJSON, _ := cli.ContainerInspect(context.Background(), result.msg.ID)
 
 					if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
-						currentMemory += float64(cJSON.ContainerJSONBase.HostConfig.Memory)
 						memoryPerID[result.msg.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
 					}
 
@@ -146,7 +145,7 @@ func initializeOnFirstCall() error {
 			}
 			logrus.Info("Current memory used: " + strconv.FormatInt(int64(tmp), 10))
 			currentMemory = float64(tmp)
-			time.Sleep(120 * time.Second)
+			time.Sleep(30 * time.Second)
 		}
 	}()
 	return nil
