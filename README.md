@@ -24,7 +24,7 @@ from
 
 ```
 
-.../github.com/memAuditAuthz/broker
+.../github.com/AuthzMemory/broker
 ```
 
 run 
@@ -37,7 +37,7 @@ run
 
 ```
 
-... sudo .../dockerd --authorization-plugin=auth-broker
+... sudo .../dockerd --authorization-plugin=authz-broker
 ```
 
 ###All Set now work with the docker engine and the engine will use the plugin. 
