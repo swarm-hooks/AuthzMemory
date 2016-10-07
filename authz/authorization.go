@@ -26,7 +26,7 @@ const (
 
 // defaultAuditLogPath is the file test hook log path
 const defaultAuditLogPath = "/var/log/authz-broker.log"
-const countExited = false
+//const countExited = false
 
 type basicAuthorizer struct {
 	settings *BasicAuthorizerSettings
@@ -40,6 +40,7 @@ var memoryLimit int64
 var currentMemory float64
 var cli *client.Client
 var memoryPerID map[string]int64
+var countedPerID map[string]bool
 
 // NewBasicAuthZAuthorizer creates a new basic authorizer
 func NewBasicAuthZAuthorizer(settings *BasicAuthorizerSettings) core.Authorizer {
@@ -55,6 +56,7 @@ func (f *basicAuthorizer) Init() error {
 
 func initializeOnFirstCall() error {
 	memoryPerID = make(map[string]int64)
+	countedPerID = make(map[string]bool)
 	defaultHeaders := map[string]string{"User-Agent": "engine-api-cli-1.0", AuthZTenantIDHeaderName: "infoTenantInternal"}
 	var err error
 	cli, err = client.NewClient("unix:///var/run/docker.sock", "v1.24", nil, defaultHeaders)
@@ -108,23 +110,37 @@ func initializeOnFirstCall() error {
 				}
 				logrus.Debug(result.msg)
 
+				isKubContainer := false
+				if strings.HasPrefix(result.msg.Actor.Attributes["name"], "k8s_") {
+					isKubContainer = true
+				}				
 				if result.msg.Action == "create" && result.msg.Type == "container" {
 					memoryPerID[result.msg.ID] = 0
+					countedPerID[result.msg.ID] = false
 					cJSON, _ := cli.ContainerInspect(context.Background(), result.msg.ID)
 					if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
 						memoryPerID[result.msg.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
+						countedPerID[result.msg.ID] = true
 					}
-
-				} else if countExited && result.msg.Action == "destroy" && result.msg.Type == "container" {
-					// Destroy event. Decrease used memory
-					currentMemory -= float64(memoryPerID[result.msg.ID])
+				} else if result.msg.Action == "destroy" && result.msg.Type == "container" {
+					// Destroy event. Decrease used memory except for k8s container.					
+					if !isKubContainer {
+						currentMemory -= float64(memoryPerID[result.msg.ID])
+					}					
 					delete(memoryPerID, result.msg.ID)
-				} else if !countExited && result.msg.Action == "destroy" && result.msg.Type == "container" {
-					// Destroy event. Don't decrease used memory.
-					delete(memoryPerID, result.msg.ID)
-				} else if !countExited && result.msg.Action == "die" && result.msg.Type == "container" {
-					// Die event. Decrease used memory.
-					currentMemory -= float64(memoryPerID[result.msg.ID])
+					delete(countedPerID, result.msg.ID)
+				} else if result.msg.Action == "die" && result.msg.Type == "container" {
+					// Die event. Decrease used memory for k8s container.
+					if isKubContainer {
+						currentMemory -= float64(memoryPerID[result.msg.ID])
+						countedPerID[result.msg.ID] = false
+					}
+				} else if result.msg.Action == "start" && result.msg.Type == "container" {				
+					// Start event. Increase used memory for not counted k8s container.
+					if isKubContainer && !countedPerID[result.msg.ID] {
+						currentMemory += float64(memoryPerID[result.msg.ID])
+						countedPerID[result.msg.ID] = true
+					}
 				}
 			}
 		}
@@ -132,30 +148,29 @@ func initializeOnFirstCall() error {
 
 	go func() {
 		for {
-
+			logrus.Info("Starting periodic count.")
 			options := types.ContainerListOptions{All: true}
 			containers, err := cli.ContainerList(context.Background(), options)
 			if err != nil {
 				panic(err)
 			}
 			var tmp int64
-			for _, c := range containers {
-				cJSON, _ := cli.ContainerInspect(context.Background(), c.ID)				
+			for _, c := range containers {				
+				cJSON, _ := cli.ContainerInspect(context.Background(), c.ID)												
 				if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
+					name := strings.TrimPrefix(cJSON.ContainerJSONBase.Name, "/")				
 					tmp += cJSON.ContainerJSONBase.HostConfig.Memory
-					
-					if !countExited && c.State != "running" {
-						// Don't count not running container
+					memoryPerID[cJSON.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
+					countedPerID[cJSON.ID] = true				
+					// Don't count not running k8s containers				
+					if strings.HasPrefix(name, "k8s_") && c.State != "running" {
 						tmp -= cJSON.ContainerJSONBase.HostConfig.Memory
-					}
-					
+						countedPerID[cJSON.ID] = false
+					}					
 					if cJSON.ContainerJSONBase.HostConfig.Memory == 0 {
 						logrus.Infof("Warning no memory accounted for container %s ", cJSON.ID)
-					} else {
-						memoryPerID[cJSON.ID] = cJSON.ContainerJSONBase.HostConfig.Memory
 					}
 				}
-
 			}
 			logrus.Info("Current memory used: " + strconv.FormatInt(int64(tmp), 10))
 			currentMemory = float64(tmp)
@@ -176,35 +191,14 @@ func (f *basicAuthorizer) AuthZReq(authZReq *authorization.Request) *authorizati
 	// logrus.Infof("Received AuthZ request, method: '%s', url: '%s' , headers: '%s'", authZReq.RequestMethod, authZReq.RequestURI, authZReq.RequestHeaders)
 
 	action, _ := core.ParseRoute(authZReq.RequestMethod, authZReq.RequestURI)
-	if action == core.ActionContainerStart && !countExited {
-		ID := getID(authZReq.RequestURI)
-		cJSON, _ := cli.ContainerInspect(context.Background(), ID)
-		var memory float64
-		if cJSON.ContainerJSONBase != nil && cJSON.ContainerJSONBase.HostConfig != nil {
-			memory = float64(cJSON.ContainerJSONBase.HostConfig.Memory)
-		}
-	
-		if currentMemory + memory < float64(memoryLimit) {
-			currentMemory += memory
-			return &authorization.Response{
-				Allow: true,
-			}
-		}
-		return &authorization.Response{
-			Allow: false,
-			Msg:   "Not enough Memory",
-		}
-	}
-	if action == core.ActionContainerCreate && countExited {
+	if action == core.ActionContainerCreate{
 		var request interface{}
 		err := json.Unmarshal(authZReq.RequestBody, &request)
 		if err != nil {
 			logrus.Error(err)
 		}
 		m := request.(map[string]interface{})
-		// logrus.Info(m)
 		hostConfig := m["HostConfig"].(map[string]interface{})
-
 		memory := hostConfig["Memory"].(float64)
 //		if memory == 0.0 {
 //			return &authorization.Response{
@@ -235,10 +229,4 @@ func (f *basicAuthorizer) AuthZRes(authZReq *authorization.Request) *authorizati
 
 	return &authorization.Response{Allow: true}
 
-}
-
-//
-func getID(requestURI string) string {
-	fields := strings.Split(requestURI, "/")
-	return fields[3]
 }
