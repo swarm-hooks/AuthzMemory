@@ -174,12 +174,12 @@ func (f *basicAuthorizer) AuthZReq(authZReq *authorization.Request) *authorizati
 		hostConfig := m["HostConfig"].(map[string]interface{})
 
 		memory := hostConfig["Memory"].(float64)
-		if memory == 0.0 {
-			return &authorization.Response{
-				Allow: false,
-				Msg:   "Must request Memory",
-			}
-		}
+//		if memory == 0.0 {
+//			return &authorization.Response{
+//				Allow: false,
+//				Msg:   "Must request Memory",
+//			}
+//		}
 		// logrus.Info(memory)
 		if float64(currentMemory)+memory < float64(memoryLimit) {
 			currentMemory += memory
