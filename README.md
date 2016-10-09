@@ -9,9 +9,23 @@ Which has two Goals:
 
 2 - Make sure the the daemon never overcommits memory
 
-In ordet to devlop or just run it you have to work according to the [documentation for docker plugins](https://docs.docker.com/engine/extend/plugin_api/#plugin-discovery):
+In ordet to devlop or just run it you have to work according to the [documentation for docker plugins](https://docs.docker.com/engine/extend/plugin_api/#plugin-discovery)
 
-###Example on Ubuntu VM:
+###Prerequisites:
+
+1. Go 1.7 or later.
+2. Docker 1.12 or later.
+3. Git.
+
+###Example on Ubuntu OS:
+
+###### Build the plugin
+```
+git clone https://github.com/swarm-hooks/AuthzMemory
+cd AuthzMemory/broker
+go build
+```
+Executable binary file will be created. It can be copied to any directory.
 
 ###### Stop running docker service
 ```
@@ -20,14 +34,6 @@ sudo service docker stop
 ```
 
 ###### Run the plugin binary
-from
-
-```
-
-.../github.com/AuthzMemory/broker
-```
-
-run 
 ```
 
 ./broker
